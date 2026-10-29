@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Hash every file in two or more release trees and say what each build shares.
+
+    tree-census TREE_A TREE_B [TREE_C ...] [--ci] [--only-diff]
+    tree-census us/ norway/ gog/ --ci        # CD trees with mixed-case names
+
+Paths are compared relative to each tree root (--ci folds case, for ISO and
+DOS trees). One row per path: the size, then per tree a short label for its
+content -- equal labels mean byte-identical files, `-` means absent. A
+summary at the end counts identical / differing / partial paths and lists
+files that are identical under DIFFERENT names (renamed or duplicated
+masters). --only-diff drops the rows where every tree holds the same bytes.
+"""
+import argparse
+import hashlib
+import os
+import sys
+from collections import defaultdict
+
+
+def scan(root, ci):
+    out = {}
+    for d, _, files in os.walk(root):
+        for f in files:
+            p = os.path.join(d, f)
+            if os.path.islink(p) or not os.path.isfile(p):
+                continue
+            rel = os.path.relpath(p, root)
+            h = hashlib.md5()
+            with open(p, 'rb') as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b''):
+                    h.update(chunk)
+            out[rel.lower() if ci else rel] = (h.hexdigest(), os.path.getsize(p))
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('trees', nargs='+')
+    ap.add_argument('--ci', action='store_true', help='case-insensitive paths')
+    ap.add_argument('--only-diff', action='store_true')
+    a = ap.parse_args()
+    if len(a.trees) < 2:
+        sys.exit('need at least two trees')
+
+    scans = [scan(t, a.ci) for t in a.trees]
+    paths = sorted(set().union(*scans))
+    print('path\tsize\t' + '\t'.join(a.trees))
+    same = differ = partial = 0
+    for p in paths:
+        cells = [s.get(p) for s in scans]
+        hashes = [c[0] for c in cells if c]
+        labels, cols = {}, []
+        for c in cells:
+            if c is None:
+                cols.append('-')
+            else:
+                labels.setdefault(c[0], 'v%d' % (len(labels) + 1))
+                cols.append(labels[c[0]])
+        if None in cells:
+            partial += 1
+        elif len(set(hashes)) == 1:
+            same += 1
+            if a.only_diff:
+                continue
+        else:
+            differ += 1
+        size = max(c[1] for c in cells if c)
+        print('%s\t%d\t%s' % (p, size, '\t'.join(cols)))
+
+    by_hash = defaultdict(set)
+    for s in scans:
+        for p, (h, _) in s.items():
+            by_hash[h].add(p)
+    renamed = [sorted(ps) for ps in by_hash.values() if len(ps) > 1]
+    sys.stderr.write('%d paths: %d identical in every tree, %d differ, %d missing from some tree\n'
+                     % (len(paths), same, differ, partial))
+    if renamed:
+        sys.stderr.write('%d contents appear under more than one name:\n' % len(renamed))
+        for ps in sorted(renamed)[:40]:
+            sys.stderr.write('  ' + ' == '.join(ps) + '\n')
+
+
+if __name__ == '__main__':
+    main()

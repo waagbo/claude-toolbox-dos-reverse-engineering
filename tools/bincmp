@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Byte-compare two ranges of two flat images.
+
+    bincmp A.bin BASE_A ADDR_A B.bin BASE_B ADDR_B LEN
+    bincmp c2/obj1.bin 0x10000 0x21652 c1/obj1.bin 0x10000 0x156ac 0x9f
+
+All numbers hex. Prints the equal fraction and the differing offsets
+(+off(a/b)). The settling test for an xbin-match pair: IDENTICAL means
+byte-for-byte; a handful of diffs that are all rel32/disp32 operand bytes
+means SAME code relinked.
+"""
+import sys
+
+
+def main():
+    if len(sys.argv) != 8:
+        sys.exit(__doc__.strip())
+    pa, ba, aa, pb, bb, ab, n = sys.argv[1:]
+    ba, aa, bb, ab, n = (int(x, 16) for x in (ba, aa, bb, ab, n))
+    x = open(pa, 'rb').read()[aa - ba:aa - ba + n]
+    y = open(pb, 'rb').read()[ab - bb:ab - bb + n]
+    if len(x) < n or len(y) < n:
+        sys.exit('range runs past the end of an image (%d / %d of %d bytes)' % (len(x), len(y), n))
+    diff = [i for i in range(n) if x[i] != y[i]]
+    print('A 0x%x vs B 0x%x, %d bytes: %d/%d equal (%.1f%%)%s'
+          % (aa, ab, n, n - len(diff), n, 100 * (n - len(diff)) / n,
+             '  IDENTICAL' if not diff else ''))
+    if diff:
+        print(('diff offsets: ' if len(diff) < 80 else 'first 80 diffs: ')
+              + ' '.join('+%x(%02x/%02x)' % (d, x[d], y[d]) for d in diff[:80]))
+
+
+if __name__ == '__main__':
+    main()

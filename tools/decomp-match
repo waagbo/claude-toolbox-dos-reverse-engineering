@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Match the functions of two ghidra-dump corpora (two builds of one program).
+
+Every FUN_/DAT_/LAB_xxxxxxxx suffix, every 5+-digit hex literal and every
+comment is masked out, then each function body is hashed. Equal hashes are
+the same function at a (possibly) different address.
+
+    decomp-match A/decomp B/decomp [--labels us de]          # default report
+    decomp-match A/decomp B/decomp --align                   # gap-segment view
+
+Default report: counts, the unmatched functions of each side, then suggested
+pairs for the unmatched ones (address order + size within 2x).
+--align: identical functions become ANCHORS; the unmatched functions between
+consecutive anchors are listed per gap with the local address delta, which is
+where changed/added/removed functions pair up. A non-monotonic anchor warning
+means two tiny functions share a hash and were cross-paired, or the linker
+moved whole modules (layout only; check the deltas before calling it code).
+
+A hash mismatch is not a code change until the asm says so: Ghidra types a
+relocated global differently from one import to the next. Settle each pair
+with `decomp-diff`, then xbin-diff/bincmp on the listings.
+Origin: re/tools/match_decomps.py + align_decomps.py (Cyberia RE project).
+"""
+import argparse
+import hashlib
+import os
+import re
+from collections import defaultdict
+
+ADDR_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_.+]*?)_[0-9a-fA-F]{5,8}\b')
+HEX_RE = re.compile(r'0x[0-9a-fA-F]{5,}')
+COMMENT_RE = re.compile(r'/\*.*?\*/', re.S)
+
+
+def load(dump_dir):
+    funcs = []
+    for line in open(os.path.join(dump_dir, '_index.tsv')):
+        p = line.rstrip('\n').split('\t')
+        if len(p) < 4 or p[0] == 'address' or p[3].startswith('FAIL'):
+            continue
+        text = open(os.path.join(dump_dir, p[3]), errors='replace').read()
+        text = COMMENT_RE.sub('', text)
+        text = ADDR_RE.sub(lambda m: m.group(1), text)
+        text = HEX_RE.sub('HEX', text)
+        funcs.append({'addr': int(p[0].split('::')[-1], 16), 'name': p[1],
+                      'size': int(p[2]), 'hash': hashlib.md5(text.encode()).hexdigest()})
+    funcs.sort(key=lambda f: f['addr'])
+    return funcs
+
+
+def pair(fa, fb):
+    ha, hb = defaultdict(list), defaultdict(list)
+    for f in fa:
+        ha[f['hash']].append(f)
+    for f in fb:
+        hb[f['hash']].append(f)
+    anchors = []
+    for h, la in ha.items():
+        anchors += list(zip(la, hb.get(h, [])))
+    anchors.sort(key=lambda p: p[0]['addr'])
+    ma = {x['addr'] for x, _ in anchors}
+    mb = {y['addr'] for _, y in anchors}
+    return (anchors, [f for f in fa if f['addr'] not in ma],
+            [f for f in fb if f['addr'] not in mb])
+
+
+def fmt(f):
+    return '%08x %s (%d)' % (f['addr'], f['name'], f['size'])
+
+
+def report(fa, fb, anchors, ra, rb, la, lb):
+    print('%s: %d funcs, %s: %d funcs' % (la, len(fa), lb, len(fb)))
+    print('identical (normalized): %d' % len(anchors))
+    print('unmatched in %s: %d' % (la, len(ra)))
+    print('unmatched in %s: %d' % (lb, len(rb)))
+    print('\n== unmatched in %s (changed or removed):' % la)
+    for f in ra:
+        print('  %08x  %-20s size=%d' % (f['addr'], f['name'], f['size']))
+    print('== unmatched in %s (changed or added):' % lb)
+    for f in rb:
+        print('  %08x  %-20s size=%d' % (f['addr'], f['name'], f['size']))
+    print('\n== suggested pairs (order+size heuristic):')
+    i = j = 0
+    while i < len(ra) and j < len(rb):
+        a, b = ra[i], rb[j]
+        big = max(a['size'], b['size'])
+        if big and min(a['size'], b['size']) / big > 0.5:
+            print('  %s  <->  %s' % (fmt(a), fmt(b)))
+            i += 1
+            j += 1
+        elif a['size'] < b['size']:
+            print('  %s  <->  ONLY-%s?' % (fmt(a), la))
+            i += 1
+        else:
+            print('  ONLY-%s?  <->  %s' % (lb, fmt(b)))
+            j += 1
+    for a in ra[i:]:
+        print('  %s  <->  (none)' % fmt(a))
+    for b in rb[j:]:
+        print('  (none)  <->  %s' % fmt(b))
+
+
+def align(anchors, ra, rb, la, lb):
+    bad = sum(1 for (_, y), (_, y2) in zip(anchors, anchors[1:]) if y2['addr'] <= y['addr'])
+    if bad:
+        print('WARNING: %d non-monotonic anchor pairs (dup-hash mispair or moved modules)' % bad)
+    print('anchors: %d   unmatched %s: %d   unmatched %s: %d\n'
+          % (len(anchors), la, len(ra), lb, len(rb)))
+    bounds = [(0, 0)] + [(x['addr'], y['addr']) for x, y in anchors] + [(1 << 32, 1 << 32)]
+    for (alo, blo), (ahi, bhi) in zip(bounds, bounds[1:]):
+        sa = [f for f in ra if alo < f['addr'] < ahi]
+        sb = [f for f in rb if blo < f['addr'] < bhi]
+        if not sa and not sb:
+            continue
+        print('--- gap after anchor %s %08x <-> %08x (delta %+d)' % (la, alo, blo, blo - alo))
+        for k in range(max(len(sa), len(sb))):
+            left = '%08x %-16s sz=%-5d' % (sa[k]['addr'], sa[k]['name'], sa[k]['size']) \
+                if k < len(sa) else ' ' * 38
+            right = '%08x %-16s sz=%-5d' % (sb[k]['addr'], sb[k]['name'], sb[k]['size']) \
+                if k < len(sb) else ''
+            print('  %s | %s' % (left, right))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('dir_a')
+    ap.add_argument('dir_b')
+    ap.add_argument('--labels', nargs=2, default=['A', 'B'], metavar=('LA', 'LB'))
+    ap.add_argument('--align', action='store_true', help='anchor-aligned gap view')
+    a = ap.parse_args()
+    fa, fb = load(a.dir_a), load(a.dir_b)
+    anchors, ra, rb = pair(fa, fb)
+    if a.align:
+        align(anchors, ra, rb, *a.labels)
+    else:
+        report(fa, fb, anchors, ra, rb, *a.labels)
+
+
+if __name__ == '__main__':
+    main()

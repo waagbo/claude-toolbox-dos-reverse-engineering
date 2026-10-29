@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""How much of each function in A occurs anywhere in B.
+
+For every function in A's Ghidra index: the fraction of its 4-instruction
+shingles that appear ANYWHERE in B. No function boundary is needed on the B
+side and only Ghidra's on the A side, so this is the honest number to quote
+for "how much of A is B's code".
+
+    xbin-coverage A.asm --index-a A/_index.tsv B.asm [-k 4]
+
+Output TSV, highest first: a_addr  insns  coverage. A histogram goes to
+stderr. Compiler idioms (prologues, libc) give every function a floor: read
+values below ~0.5 as "shares idioms", not "shares code".
+"""
+import argparse
+import sys
+
+from xbinlib import Listing, hexarg, index_rows, shingles
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('a')
+    ap.add_argument('b')
+    ap.add_argument('--index-a', required=True)
+    ap.add_argument('-k', type=int, default=4, help='shingle length')
+    ap.add_argument('--addr-min', type=hexarg, default=0x8000)
+    a = ap.parse_intermixed_args()
+
+    la, lb = Listing(a.a, a.addr_min), Listing(a.b, a.addr_min)
+    bset = shingles(lb.shape, a.k)
+    out = []
+    for addr, _name, size in index_rows(a.index_a):
+        lo, hi = la.span(addr, addr + size)
+        toks = la.shape[lo:hi]
+        if len(toks) < a.k + 2:
+            out.append((addr, len(toks), None))
+            continue
+        g = [tuple(toks[i:i + a.k]) for i in range(len(toks) - a.k + 1)]
+        out.append((addr, len(toks), sum(1 for x in g if x in bset) / len(g)))
+
+    print('a_addr\tinsns\tcoverage')
+    for addr, n, c in sorted(out, key=lambda r: -(r[2] if r[2] is not None else -1)):
+        print('%08x\t%d\t%s' % (addr, n, '' if c is None else '%.3f' % c))
+    vals = [c for _, _, c in out if c is not None]
+    sys.stderr.write('scored %d of %d indexed functions\n' % (len(vals), len(out)))
+    for th in (0.9, 0.75, 0.5, 0.25, 0.1):
+        sys.stderr.write('  coverage >= %.2f: %d\n' % (th, sum(1 for v in vals if v >= th)))
+
+
+if __name__ == '__main__':
+    main()

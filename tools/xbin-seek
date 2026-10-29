@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Find where one routine of listing A lives in listing B.
+
+Slides the shape of N instructions starting at ADDR in A over EVERY
+instruction boundary of B, so it finds handlers that xbin-match cannot split
+out: routines reached only through a function-pointer or jump table, never a
+direct call.
+
+    xbin-seek A.asm ADDR B.asm [-n 40] [--thr 0.55] [--top 6]
+    xbin-seek c1.asm 0x158fc c2.asm         # where did C1's block loop go?
+
+Prints the best hits (matching instructions / N) and the first mismatching
+lines of the top hit, side by side.
+"""
+import argparse
+
+from xbinlib import Listing, hexarg
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('a')
+    ap.add_argument('addr', type=hexarg)
+    ap.add_argument('b')
+    ap.add_argument('-n', type=int, default=40, help='pattern length in instructions')
+    ap.add_argument('--thr', type=float, default=0.55, help='minimum fraction equal')
+    ap.add_argument('--top', type=int, default=6)
+    ap.add_argument('--addr-min', type=hexarg, default=0x8000)
+    a = ap.parse_args()
+
+    src, dst = Listing(a.a, a.addr_min), Listing(a.b, a.addr_min)
+    i = src.at(a.addr)
+    pat = src.shape[i:i + a.n]
+    need = len(pat) * a.thr
+    hits = []
+    for j in range(len(dst.shape) - len(pat) + 1):
+        eq = sum(1 for k, p in enumerate(pat) if dst.shape[j + k] == p)
+        if eq >= need:
+            hits.append((eq, j))
+    hits.sort(key=lambda h: (-h[0], h[1]))
+    print('pattern: %s %x (%d insns)' % (a.a, src.addr[i], len(pat)))
+    for eq, j in hits[:a.top]:
+        print('  -> %s %08x   %d/%d = %.3f' % (a.b, dst.addr[j], eq, len(pat), eq / len(pat)))
+    if hits:
+        j = hits[0][1]
+        print('  first mismatching lines:')
+        shown = 0
+        for k, p in enumerate(pat):
+            if dst.shape[j + k] != p and shown < 8:
+                print('    [%3d] A %-44s B %s' % (k, src.raw[i + k], dst.raw[j + k]))
+                shown += 1
+
+
+if __name__ == '__main__':
+    main()

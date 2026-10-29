@@ -4,8 +4,8 @@ An Ubuntu 24.04 container for disassembling and reverse-engineering
 1990s DOS binaries — Watcom LE executables under DOS/4GW in particular —
 and the data formats they read. It packages the toolset the
 Cyberia (1994) / Cyberia 2 (1995) reversal actually ran on, plus generic
-versions of that project's helper scripts, and a Claude Code skill
-(`.claude/skills/dos-re-toolbox/`) that documents how to use them.
+versions of that project's helper scripts, and Claude Code skills (`.claude/skills/`) that document how to use them
+and the method around them.
 
 ## Quick start
 
@@ -70,6 +70,10 @@ Toolbox scripts (on `PATH`, all `--help`/no-arg self-documenting):
 | `asmview LISTING -f FIXUPS …` | listing range / function / xrefs with fixup targets and string literals resolved |
 | `ghidra-import`, `ghidra-dump` | headless import, and the per-function decomp dump (`GhidraDumpDecompArg.java`) |
 | `decomp-diff` | address-normalised diff of one function across two builds |
+| `decomp-match A B [--align]` | match two decomp corpora by normalised body hash; unmatched functions paired per gap |
+| `xbin-match`, `xbin-seek`, `xbin-diff`, `xbin-coverage` | address-blind function correspondence between two listings by instruction shape (sequels, sibling builds) |
+| `bincmp` | byte-compare two ranges of two images: IDENTICAL, or which bytes differ |
+| `tree-census` | hash two or more release trees: shared, differing, missing and renamed files |
 | `iso-extract` | pure-Python ISO9660 extractor |
 | `dosdbg`, `dbgdrive` | DOSBox-X debugger session in tmux + its Python driver for scenario scripts |
 
@@ -91,13 +95,20 @@ source tree) is needed.
 gh release create v1.2.3 --generate-notes   # tag -> workflow -> ghcr.io/…:1.2.3, :1.2, :1, :latest
 ```
 
-## Using the skill
+## Using the skills
 
-`.claude/skills/dos-re-toolbox/` is a Claude Code skill. It is active in
-sessions started inside this repo; to use it from any project, link it:
+| Skill | For |
+|---|---|
+| `dos-re-toolbox` | the tools: unpack an LE executable, list it, Ghidra headless, DOSBox-X debugger traces, rendering artifacts |
+| `reverse-engineer-to-c99` | porting asm to asm-faithful C99, reversing a script VM and writing its disassembler, fixing a port's live bugs from the asm |
+| `reverse-engineer-validation` | proving a port matches the original: oracles, deterministic headless drives, content checks, induced-failure proofs, goldens |
+| `reverse-engineer-compare-game-versions` | build census, diffing versions of an executable, mapping a reversed binary onto a sequel or port, carrying symbol names across |
+
+They are active in sessions started inside this repo; to use them from any
+project, link them:
 
 ```bash
-ln -sfn "$PWD/.claude/skills/dos-re-toolbox" ~/.claude/skills/dos-re-toolbox
+for s in .claude/skills/*/; do ln -sfn "$PWD/$s" ~/.claude/skills/"$(basename "$s")"; done
 ```
 
 ## Not included

@@ -86,12 +86,16 @@ grep -P '\tFUN_0001b360\t' out/decomp/_index.tsv     # address, name, size, file
   decompiler could not do — read those in asm only.
 - Comparing builds (regional / patched versions of one game): dump both
   corpora, then `decomp-diff A/decomp ADDR_A B/decomp ADDR_B`. Empty output
-  means the same code at a different address.
+  means the same code at a different address. The full method is the
+  `reverse-engineer-compare-game-versions` skill.
 - Re-run `ghidra-dump` after every re-import or rename pass so the corpus
   on disk matches the project.
 
-For porting a function to C once it is read, use the
-`reverse-engineer-to-c99` skill.
+Next steps live in their own skills: porting a function (or a script VM)
+to C is `reverse-engineer-to-c99`; proving the port matches is
+`reverse-engineer-validation`; comparing builds or games on one engine
+(`decomp-match`, `xbin-*`, `bincmp`, `tree-census`) is
+`reverse-engineer-compare-game-versions`.
 
 ## 3. Dynamic trace — the DOSBox-X debugger
 
@@ -122,6 +126,8 @@ the reviewer should see in it (including "this one is noise"). Recipes:
 - Cite `BINARY:0xADDR` (or `listing:line`) for every load-bearing claim;
   an uncited claim is a hypothesis.
 - Date-stamp findings with their evidence; correct old notes in place when
-  a finding is overturned.
+  a finding is overturned, and add a row to the project's `RETRACTIONS.md`
+  (retracted belief → truth, evidence, commit). Check it before porting
+  from any note.
 - Label invented harness/viewer code NON-ASM; behaviour comes from the
   binary.

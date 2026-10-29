@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Find each function of listing A in listing B by instruction SHAPE.
+
+Addresses are never used to match (two builds of one engine can share a link
+map, so equal addresses prove nothing). For every candidate function in A:
+EXACT if its shape (or its prefix up to the first ret) occurs as a whole
+function in B, otherwise the B function with the best Jaccard score over
+4-instruction shingles.
+
+    xbin-match A.asm B.asm [--index-a A/_index.tsv] [--index-b B/_index.tsv]
+    xbin-match c2.asm c1.asm --index-a c2/decomp/_index.tsv --index-b c1/decomp/_index.tsv
+
+Output TSV, best score first: a_addr  a_insns  b_addr  score  kind
+(kind = EXACT | fuzzy | tiny). A score is a lead, not a verdict: confirm a
+pair with xbin-diff and bincmp before writing it down. Functions reached only
+through a pointer table are not split out here -- find those with xbin-seek.
+"""
+import argparse
+import sys
+from collections import defaultdict
+
+from xbinlib import Listing, functions, hexarg, index_rows, shingles, variants
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('a')
+    ap.add_argument('b')
+    ap.add_argument('--index-a', help='ghidra-dump _index.tsv for A (adds function starts)')
+    ap.add_argument('--index-b', help='ghidra-dump _index.tsv for B')
+    ap.add_argument('--addr-min', type=hexarg, default=0x8000,
+                    help='literals >= this are addresses (default 0x8000)')
+    ap.add_argument('--min-insns', type=int, default=5,
+                    help='shorter bodies are reported as tiny (default 5)')
+    a = ap.parse_args()
+
+    la, lb = Listing(a.a, a.addr_min), Listing(a.b, a.addr_min)
+    fa = functions(la, a.index_a and index_rows(a.index_a))
+    fb = functions(lb, a.index_b and index_rows(a.index_b))
+    sys.stderr.write('candidate functions: A=%d B=%d\n' % (len(fa), len(fb)))
+
+    exact = defaultdict(list)
+    inv = defaultdict(set)
+    bgrams = {}
+    for addr, t in fb.items():
+        for v in variants(t):
+            if len(v) >= a.min_insns:
+                exact['\n'.join(v)].append(addr)
+            for g in shingles(v):
+                inv[g].add(addr)
+        bgrams[addr] = shingles(t) | shingles(variants(t)[-1])
+
+    rows = []
+    for addr, t in sorted(fa.items()):
+        vs = [v for v in variants(t) if len(v) >= a.min_insns]
+        if not vs:
+            rows.append((addr, len(t), None, 0.0, 'tiny'))
+            continue
+        hit = next((exact['\n'.join(v)][0] for v in vs if '\n'.join(v) in exact), None)
+        if hit is not None:
+            rows.append((addr, len(vs[-1]), hit, 1.0, 'EXACT'))
+            continue
+        best, score = None, 0.0
+        for v in vs:
+            g = shingles(v)
+            cnt = defaultdict(int)
+            for x in g:
+                for b in inv.get(x, ()):
+                    cnt[b] += 1
+            for b, c in cnt.items():
+                j = c / max(1, len(g | bgrams[b]))
+                if j > score:
+                    score, best = j, b
+        rows.append((addr, len(t), best, score, 'fuzzy'))
+
+    rows.sort(key=lambda r: -r[3])
+    print('a_addr\ta_insns\tb_addr\tscore\tkind')
+    for addr, n, b, sc, kind in rows:
+        print('%08x\t%d\t%s\t%.3f\t%s' % (addr, n, '%08x' % b if b is not None else '-', sc, kind))
+
+
+if __name__ == '__main__':
+    main()
