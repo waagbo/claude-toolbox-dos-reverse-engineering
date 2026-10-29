@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Unpack a Watcom / DOS4GW LE (Linear Executable) into flat object images.
+
+    le-unpack <EXE> <outdir>
+
+Writes:
+    objN.bin        one flat image per LE object, page-assembled through the
+                    object page table, zero-filled up to the object's virtual
+                    size (BSS), loaded at the object's link base
+    le_report.txt   header fields, object table, entry point, and the objdump
+                    command for each executable object
+
+No fixups are applied: absolute operands in the images are OBJECT-RELATIVE
+(objdump prints `ds:0xbbc4` where the flat address is data_base + 0xbbc4).
+Use `le-fixups` + `asmview` to resolve them.
+
+The "data pages offset" field (LE+0x80) is relative to the start of the FILE,
+not to the LE header. Getting that wrong shifts every object by e_lfanew and
+silently drops its first e_lfanew bytes (the Cyberia 2 unpacker shipped with
+exactly that bug; proof was the Watcom `jmp short` + "WATCOM C/C++32 Run-Time"
+banner at the LE entry point).
+
+Origin: re2/tools/le_unpack_fixed.py + dis2.le_unpack2 (Cyberia RE project).
+LE only: LX (OS/2) page-table entries are laid out differently and are refused.
+"""
+import os
+import struct
+import sys
+
+OBJ_FLAGS = [(0x1, 'R'), (0x2, 'W'), (0x4, 'X'), (0x8, 'resource'),
+             (0x10, 'discardable'), (0x20, 'shared'), (0x40, 'preload'),
+             (0x2000, 'big/32-bit')]
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.exit(__doc__)
+    exe, out = sys.argv[1], sys.argv[2]
+    raw = open(exe, 'rb').read()
+    if raw[:2] != b'MZ':
+        sys.exit('%s: no MZ header' % exe)
+    e_lfanew = struct.unpack_from('<I', raw, 0x3c)[0]
+    le = raw[e_lfanew:]
+    sig = le[:2]
+    if sig == b'LX':
+        sys.exit('%s: LX (OS/2) image; only LE is supported here '
+                 '(Ghidra + ghidra-lx-loader handles LX)' % exe)
+    if sig != b'LE':
+        sys.exit('%s: no LE header at e_lfanew=0x%x (found %r). A bound '
+                 'DOS/4GW stub may need unbinding first.' % (exe, e_lfanew, sig))
+
+    u32 = lambda o: struct.unpack_from('<I', le, o)[0]
+    npages = u32(0x14)
+    eip_obj, eip = u32(0x18), u32(0x1c)
+    esp_obj, esp = u32(0x20), u32(0x24)
+    page_size = u32(0x28)
+    last_page = u32(0x2c)
+    obj_tab, obj_cnt, page_tab = u32(0x40), u32(0x44), u32(0x48)
+    data_pages = u32(0x80)           # FILE-relative
+    os.makedirs(out, exist_ok=True)
+
+    rep = []
+    rep.append('file            %s (%d bytes)' % (exe, len(raw)))
+    rep.append('e_lfanew        0x%x' % e_lfanew)
+    rep.append('pages           %d x 0x%x (last page 0x%x bytes)'
+               % (npages, page_size, last_page))
+    rep.append('data pages      file+0x%x' % data_pages)
+    rep.append('objects         %d' % obj_cnt)
+    objs = []
+    for i in range(obj_cnt):
+        vsize, base, flags, pmap, pcnt = struct.unpack_from(
+            '<IIIII', le, obj_tab + i * 24)
+        objs.append((vsize, base, flags, pmap, pcnt))
+    if 1 <= eip_obj <= obj_cnt:
+        rep.append('entry           obj%d:0x%x  (flat 0x%08x)'
+                   % (eip_obj, eip, objs[eip_obj - 1][1] + eip))
+    if 1 <= esp_obj <= obj_cnt:
+        rep.append('stack           obj%d:0x%x  (flat 0x%08x)'
+                   % (esp_obj, esp, objs[esp_obj - 1][1] + esp))
+    rep.append('')
+
+    for i, (vsize, base, flags, pmap, pcnt) in enumerate(objs, 1):
+        img = bytearray()
+        present = 0
+        for p in range(pcnt):
+            ent = page_tab + (pmap - 1 + p) * 4
+            pnum = (le[ent] << 16) | (le[ent + 1] << 8) | le[ent + 2]
+            start = data_pages + (pnum - 1) * page_size
+            size = last_page if (pnum == npages and last_page) else page_size
+            chunk = raw[start:start + size]
+            present += len(chunk)
+            img += chunk + b'\0' * (page_size - len(chunk))
+        present = min(present, vsize)
+        del img[vsize:]
+        img += b'\0' * (vsize - len(img))
+        path = os.path.join(out, 'obj%d.bin' % i)
+        open(path, 'wb').write(bytes(img))
+        fl = ','.join(n for b, n in OBJ_FLAGS if flags & b) or '-'
+        rep.append('obj%d  base 0x%08x  vsize 0x%x  pages %d  flags 0x%04x [%s]'
+                   % (i, base, vsize, pcnt, flags, fl))
+        rep.append('      -> %s  (%d bytes from file, rest zero-filled)'
+                   % (path, present))
+        if flags & 0x4:
+            mach = 'i386' if flags & 0x2000 else 'i8086'
+            rep.append('      flatdis %s 0x%x > %s'
+                       % (path, base, os.path.join(out, 'obj%d.asm' % i)))
+            rep.append('      (= objdump -D -b binary -m %s -M intel '
+                       '--adjust-vma=0x%x %s)' % (mach, base, path))
+    text = '\n'.join(rep) + '\n'
+    open(os.path.join(out, 'le_report.txt'), 'w').write(text)
+    sys.stdout.write(text)
+
+
+if __name__ == '__main__':
+    main()

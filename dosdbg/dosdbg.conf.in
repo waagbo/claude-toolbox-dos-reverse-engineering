@@ -1,0 +1,22 @@
+[sdl]
+fullscreen=false
+output=surface
+autolock=false
+[log]
+logfile=@WORK@/dosbox.log
+[dosbox]
+machine=@MACHINE@
+memsize=@MEMSIZE@
+captures=@WORK@/capture
+[cpu]
+# the debugger needs the normal core; dynamic cores skip breakpoints
+core=normal
+cputype=@CPUTYPE@
+cycles=max
+[sblaster]
+sbtype=sb16
+[autoexec]
+@echo off
+@MOUNTS@
+@EXTRA@
+DEBUGBOX @PROGRAM@

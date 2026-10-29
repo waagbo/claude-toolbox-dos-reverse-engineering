@@ -1,0 +1,7 @@
+.dosdbg/
+__pycache__/
+*.pyc
+# Ghidra projects and dumped corpora belong to the workspace you mount, not here
+*.gpr
+*.rep/
+*.lock*

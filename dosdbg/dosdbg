@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# dosdbg — run a DOS program under the DOSBox-X debugger, headless, in tmux.
+#
+#   dosdbg [opts] PROGRAM [ARGS...]      start; the debugger stops at entry
+#   dosdbg [opts] -S scenario.py PROGRAM start, then run a dbgdrive scenario
+#   dosdbg stop                          kill the session
+#
+#   -C DIR     host dir mounted as C:          (default $DOSDBG_WORK/cdrive)
+#   -D DIR     host dir mounted as D: (CD-ROM) (optional)
+#   -d DRIVE   drive to start in               (default: D if -D, else C)
+#   -e LINE    extra autoexec line before DEBUGBOX (repeatable),
+#              e.g. -e 'SET DOS4G=QUIET' -e 'CD \GAME'
+#   -m MB      memsize (default 32)  -M MACHINE (default svga_s3)
+#   -c CPU     cputype (default 486)
+#
+# Env: DOSDBG_WORK (default ./.dosdbg — the conf, dosbox.log and the C: drive
+# live there; never on a noexec /tmp), DOSDBG_SESSION (tmux session, default
+# dosdbg). Attach by hand with `tmux attach -t dosdbg`; drive it from Python
+# with dbgdrive.py (`dbgdrive screen|regs|run|send CMD|dump SEG OFF N`).
+#
+# SDL runs on the dummy video driver, so there is no window: everything is
+# read through the debugger. Load addresses under a DOS extender depend on
+# memsize and the DOSBox-X build — recalibrate (dbgdrive calibrate) whenever
+# either changes.
+set -euo pipefail
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+WORK=${DOSDBG_WORK:-$PWD/.dosdbg}
+SESSION=${DOSDBG_SESSION:-dosdbg}
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+
+if [ "${1:-}" = stop ]; then
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    [ -f "$WORK/scenario.pid" ] && kill "$(cat "$WORK/scenario.pid")" 2>/dev/null || true
+    exit 0
+fi
+
+CDRIVE= CDROM= DRIVE= SCEN= MEM=32 MACH=svga_s3 CPU=486
+EXTRA=()
+while getopts "C:D:d:e:m:M:c:S:h" o; do
+    case $o in
+    C) CDRIVE=$(cd "$OPTARG" && pwd) ;;
+    D) CDROM=$(cd "$OPTARG" && pwd) ;;
+    d) DRIVE=$OPTARG ;;
+    e) EXTRA+=("$OPTARG") ;;
+    m) MEM=$OPTARG ;; M) MACH=$OPTARG ;; c) CPU=$OPTARG ;;
+    S) SCEN=$(readlink -f "$OPTARG") ;;
+    *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+[ $# -ge 1 ] || usage
+PROGRAM="$*"
+
+mkdir -p "$WORK/capture"
+WORK=$(cd "$WORK" && pwd)
+[ -n "$CDRIVE" ] || { CDRIVE=$WORK/cdrive; mkdir -p "$CDRIVE"; }
+[ -n "$DRIVE" ] || { [ -n "$CDROM" ] && DRIVE=D || DRIVE=C; }
+
+mounts="mount c \"$CDRIVE\""
+[ -n "$CDROM" ] && mounts+=$'\n'"mount d \"$CDROM\" -t cdrom"
+mounts+=$'\n'"$DRIVE:"
+extra=$(printf '%s\n' "${EXTRA[@]+"${EXTRA[@]}"}")
+
+# substitute through the environment: DOS paths are full of backslashes
+WORK=$WORK MACHINE=$MACH MEMSIZE=$MEM CPUTYPE=$CPU MOUNTS=$mounts EXTRA=$extra \
+PROGRAM=$PROGRAM python3 -c '
+import os, sys
+s = open(sys.argv[1]).read()
+for k in ("WORK", "MACHINE", "MEMSIZE", "CPUTYPE", "MOUNTS", "EXTRA", "PROGRAM"):
+    s = s.replace("@%s@" % k, os.environ[k])
+open(sys.argv[2], "w").write(s)
+' "$HERE/dosdbg.conf.in" "$WORK/dosdbg.conf"
+
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+# A scenario from an earlier run survives kill-session and would keep typing
+# F5 into the new debugger (continuing it past the entry break). Kill by pid.
+if [ -f "$WORK/scenario.pid" ]; then kill "$(cat "$WORK/scenario.pid")" 2>/dev/null || true; sleep 1; fi
+rm -f "$WORK/dosbox.log"
+tmux new-session -d -s "$SESSION" -x 200 -y 60 \
+    "cd '$WORK' && SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy TERM=xterm-256color dosbox-x -conf dosdbg.conf -nogui -nomenu; echo DOSBOX_EXITED; sleep 3600"
+
+# wait for the debugger prompt at the program entry
+for _ in $(seq 1 60); do
+    tmux capture-pane -p -t "$SESSION" 2>/dev/null | grep -q '^I->' && break
+    sleep 0.5
+done
+if ! tmux capture-pane -p -t "$SESSION" | grep -q '^I->'; then
+    echo "dosdbg: debugger prompt did not appear; screen follows" >&2
+    tmux capture-pane -p -t "$SESSION" >&2
+    exit 1
+fi
+echo "dosdbg: stopped at entry of $PROGRAM (session $SESSION, work $WORK)"
+
+if [ -n "$SCEN" ]; then
+    echo $$ > "$WORK/scenario.pid"
+    export DOSDBG_SESSION=$SESSION DOSDBG_WORK=$WORK
+    exec python3 "$SCEN"
+fi

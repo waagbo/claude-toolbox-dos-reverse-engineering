@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# decomp-diff — address-normalised diff of one function across two builds.
+#
+#   decomp-diff DIR_A ADDR_A DIR_B ADDR_B
+#   decomp-diff us/decomp 0001dcc4 de/decomp 0001dd20     # same function, two builds
+#
+# DIRs are ghidra-dump outputs; ADDRs are the 8-hex-digit function starts
+# (the file-name prefix). Every FUN_/DAT_/LAB_xxxxxxxx suffix and every
+# 0x-literal of 5+ digits is rewritten to a placeholder first, so a relinked
+# build diffs only where the CODE differs, not where the layout moved.
+# Empty output = same function. Origin: re/tools/ndiff_builds.sh.
+set -euo pipefail
+[ $# -eq 4 ] || { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+fa=$(ls "$1/$2"_*.c 2>/dev/null | head -1) || true
+fb=$(ls "$3/$4"_*.c 2>/dev/null | head -1) || true
+[ -n "$fa" ] || { echo "no function $2 in $1" >&2; exit 2; }
+[ -n "$fb" ] || { echo "no function $4 in $3" >&2; exit 2; }
+norm() { sed -E 's/\b([A-Za-z_][A-Za-z0-9_.+]*)_[0-9a-fA-F]{5,8}\b/\1_X/g; s/0x[0-9a-fA-F]{5,}/HEX/g' "$1"; }
+diff <(norm "$fa") <(norm "$fb")

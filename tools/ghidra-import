@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# ghidra-import — import + auto-analyse a binary into a headless Ghidra project.
+#
+#   ghidra-import PROJDIR PROJNAME BINARY [extra analyzeHeadless args...]
+#   ghidra-import re/ghidra-project cyberia assets/CYB.EXE
+#
+# Auto-analysis is the slow step (minutes for a ~200 KB DOS/4GW game).
+# Loader choice: omit -loader and let auto-detection pick. For a Watcom LE the
+# ghidra-lx-loader extension's "LE-Style" loader (LeLoader) accepts it; its
+# LxLoader and VxDLoader reject LE files. If you do force one, -loader takes
+# the loader's simple class name, e.g. `-loader LeLoader`.
+set -euo pipefail
+[ $# -ge 3 ] || { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+proj=$1 name=$2 bin=$3; shift 3
+mkdir -p "$proj"
+exec analyzeHeadless "$proj" "$name" -import "$bin" -overwrite "$@"

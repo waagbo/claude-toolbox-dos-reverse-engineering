@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Dump the internal-reference fixups of an LE executable as a TSV.
+
+    le-fixups <EXE> > fixups.tsv
+
+stdout: one line per patched site, sorted by site, `src<TAB>target<TAB>srctype` (hex flat
+link addresses; srctype is the low nibble of the LE source byte: 2 = 16-bit
+selector, 5 = 16-bit offset, 6 = 16:32 pointer, 7 = 32-bit offset, 8 = 32-bit
+self-relative). stderr: the count, plus every page whose record walk does not
+end exactly on the page's fixup boundary -- the signature of a mis-decoded
+record, which would poison every target after it.
+
+Only internal references (target type 0) produce lines; imports by ordinal /
+name are walked and skipped. Feed the TSV to `asmview --fixups`.
+
+Origin: re2/tools/le_fixups2.py (Cyberia RE project), walk unchanged.
+"""
+import struct
+import sys
+
+
+def parse(exe):
+    raw = open(exe, 'rb').read()
+    off = struct.unpack_from('<I', raw, 0x3c)[0]
+    le = raw[off:]
+    if le[:2] != b'LE':
+        sys.exit('%s: no LE header' % exe)
+    u32 = lambda o: struct.unpack_from('<I', le, o)[0]
+    psize, npages = u32(0x28), u32(0x14)
+    otab, ocnt, optab = u32(0x40), u32(0x44), u32(0x48)
+    fpt, frt = u32(0x68), u32(0x6c)
+    objs = []
+    for i in range(ocnt):
+        vs, base, fl, pm, pc = struct.unpack_from('<IIIII', le, otab + i * 24)
+        objs.append((base, vs, pm, pc))
+    p2a = {}
+    for base, vs, pm, pc in objs:
+        for k in range(pc):
+            e = optab + (pm - 1 + k) * 4
+            p2a[(le[e] << 16) | (le[e + 1] << 8) | le[e + 2]] = base + k * psize
+    fx, bad = [], []
+    for p in range(1, npages + 1):
+        s = u32(fpt + (p - 1) * 4)
+        e = u32(fpt + p * 4)
+        if p not in p2a:
+            continue
+        pa = p2a[p]
+        i, end, recs = frt + s, frt + e, []
+        while i < end:
+            src, flags = le[i], le[i + 1]
+            i += 2
+            srclist = bool(src & 0x20)
+            if srclist:
+                cnt = le[i]
+                i += 1
+                so = None
+            else:
+                so = [struct.unpack_from('<h', le, i)[0]]
+                i += 2
+            tt, tgt = flags & 3, None
+            if tt == 0:                                  # internal reference
+                if flags & 0x40:
+                    on = struct.unpack_from('<H', le, i)[0]
+                    i += 2
+                else:
+                    on = le[i]
+                    i += 1
+                if (src & 0x0f) != 2:
+                    if flags & 0x10:
+                        toff = struct.unpack_from('<I', le, i)[0]
+                        i += 4
+                    else:
+                        toff = struct.unpack_from('<H', le, i)[0]
+                        i += 2
+                else:
+                    toff = 0
+                if 1 <= on <= len(objs):
+                    tgt = objs[on - 1][0] + toff
+            elif tt in (1, 2):                           # import ord / name
+                i += 2 if (flags & 0x40) else 1
+                if tt == 1:
+                    i += 4 if (flags & 0x10) else (1 if (flags & 0x80) else 2)
+                else:
+                    i += 4 if (flags & 0x10) else 2
+                if flags & 0x04:
+                    i += 4 if (flags & 0x20) else 2
+            else:                                        # entry-table ref
+                i += 2
+                if flags & 0x04:
+                    i += 4 if (flags & 0x20) else 2
+            if srclist:
+                so = list(struct.unpack_from('<%dh' % cnt, le, i))
+                i += 2 * cnt
+            if tgt is not None:
+                for o in so:
+                    recs.append((pa + o, tgt, src & 0x0f))
+        if i != end:
+            bad.append((p, pa, i - end))
+        fx += recs
+    return fx, bad
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    fx, bad = parse(sys.argv[1])
+    print('fixups %d  desynced pages %d' % (len(fx), len(bad)), file=sys.stderr)
+    for p, pa, d in bad:
+        print('  page %d @0x%05x overshoot %+d' % (p, pa, d), file=sys.stderr)
+    for s, t, k in sorted(fx):
+        print('%08x\t%08x\t%d' % (s, t, k))

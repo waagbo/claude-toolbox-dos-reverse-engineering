@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# rebox — build and enter the dos-re-toolbox container.
+#
+#   ./rebox build                 build the image (host uid/gid baked in)
+#   ./rebox shell [dir]           interactive shell, dir (default $PWD) at /work
+#   ./rebox run [dir] -- CMD...   run one command in the container
+#   ./rebox gui [dir]             Ghidra GUI over the host X11 display
+#
+# Works with docker or podman (podman gets --userns=keep-id so /work stays
+# owned by you). Override the engine with REBOX_ENGINE=docker|podman and the
+# image name with REBOX_IMAGE.
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+IMAGE=${REBOX_IMAGE:-dos-re-toolbox}
+ENGINE=${REBOX_ENGINE:-$(command -v podman >/dev/null && echo podman || echo docker)}
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+
+run_args() {
+    local dir=$1; shift
+    local a=(--rm -v "$(cd "$dir" && pwd)":/work -w /work)
+    if [ "$ENGINE" = podman ]; then a+=(--userns=keep-id); fi
+    printf '%s\n' "${a[@]}"
+}
+
+cmd=${1:-}; shift || true
+case "$cmd" in
+build)
+    exec "$ENGINE" build -t "$IMAGE" \
+        --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" "$@" "$HERE"
+    ;;
+shell)
+    dir=${1:-$PWD}
+    mapfile -t a < <(run_args "$dir")
+    exec "$ENGINE" run -it "${a[@]}" "$IMAGE" bash
+    ;;
+run)
+    dir=$PWD
+    if [ "${1:-}" != "--" ] && [ $# -gt 0 ]; then dir=$1; shift; fi
+    [ "${1:-}" = "--" ] && shift
+    [ $# -gt 0 ] || usage
+    mapfile -t a < <(run_args "$dir")
+    tty=(); [ -t 0 ] && tty=(-it)
+    exec "$ENGINE" run "${tty[@]}" "${a[@]}" "$IMAGE" "$@"
+    ;;
+gui)
+    dir=${1:-$PWD}
+    mapfile -t a < <(run_args "$dir")
+    exec "$ENGINE" run -it "${a[@]}" -e DISPLAY="${DISPLAY:-:0}" \
+        -v /tmp/.X11-unix:/tmp/.X11-unix:ro "$IMAGE" ghidraRun
+    ;;
+*) usage ;;
+esac

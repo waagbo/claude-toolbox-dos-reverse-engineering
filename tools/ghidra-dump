@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# ghidra-dump — decompile every function of an imported program to files.
+#
+#   ghidra-dump PROJDIR PROJNAME PROGRAM OUTDIR
+#   ghidra-dump re/ghidra-project cyberia CYB.EXE re/extracted/cybexe/decomp
+#
+# PROGRAM is the name inside the project (the imported file's basename).
+# Writes OUTDIR/{addr}_{name}.c per function + OUTDIR/_index.tsv
+# (address, name, size, file — FAIL: rows mark functions the decompiler gave
+# up on). Read-only against the project; re-run after every re-import or
+# rename pass so the corpus stays in sync.
+set -euo pipefail
+[ $# -eq 4 ] || { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+proj=$1 name=$2 prog=$3 out=$4
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+exec analyzeHeadless "$proj" "$name" -process "$prog" -noanalysis -readOnly \
+    -scriptPath "${REBOX_GHIDRA_SCRIPTS:-$(dirname "$0")/../ghidra_scripts}" \
+    -postScript GhidraDumpDecompArg.java "$out"

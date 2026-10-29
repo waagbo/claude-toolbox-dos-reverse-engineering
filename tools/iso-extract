@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Minimal pure-Python ISO9660 extractor (origin: Cyberia 2 RE, re2/tools).
+
+Plain ISO9660 only (no Joliet/Rock Ridge name resolution — 1995-era
+discs use uppercase 8.3 names; the ";1" version suffix is stripped).
+Usage:  iso-extract <image.iso> <outdir> [--list]
+
+Cooked 2048-byte-sector .iso only. For Joliet / Rock Ridge names use
+`7z x image.iso`; a raw 2352-byte .bin needs converting to .iso first.
+"""
+import os
+import struct
+import sys
+
+SECTOR = 2048
+
+
+def read_dir_records(data, offset, length):
+    """Yield (name, is_dir, extent, size) from one directory extent."""
+    end = offset + length
+    pos = offset
+    while pos < end:
+        rec_len = data[pos]
+        if rec_len == 0:
+            # zero-padding to the end of this sector; jump to next
+            pos = (pos // SECTOR + 1) * SECTOR
+            continue
+        extent = struct.unpack_from('<I', data, pos + 2)[0]
+        size = struct.unpack_from('<I', data, pos + 10)[0]
+        flags = data[pos + 25]
+        name_len = data[pos + 32]
+        raw = data[pos + 33: pos + 33 + name_len]
+        if raw in (b'\x00', b'\x01'):
+            name = None                      # . / ..
+        else:
+            name = raw.decode('ascii', errors='replace')
+            if ';' in name:
+                name = name.split(';')[0]    # strip version
+            if name.endswith('.'):
+                name = name[:-1]
+            if '/' in name or '\\' in name or name in ('', '.', '..'):
+                raise ValueError('refusing unsafe ISO name %r' % name)
+        yield name, bool(flags & 0x02), extent, size
+        pos += rec_len
+
+
+def walk(data, extent, size, rel, out, listing, do_extract):
+    for name, is_dir, ext, sz in read_dir_records(data, extent * SECTOR, size):
+        if name is None:
+            continue
+        path = os.path.join(rel, name)
+        if is_dir:
+            walk(data, ext, sz, path, out, listing, do_extract)
+        else:
+            listing.append((path, sz))
+            if do_extract:
+                dst = os.path.join(out, path)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(dst, 'wb') as f:
+                    f.write(data[ext * SECTOR: ext * SECTOR + sz])
+
+
+def main():
+    if len(sys.argv) < 3:
+        sys.exit(__doc__)
+    iso_path, out = sys.argv[1], sys.argv[2]
+    list_only = '--list' in sys.argv[3:]
+    data = open(iso_path, 'rb').read()
+
+    # Primary Volume Descriptor at sector 16 (type 1, id "CD001").
+    pvd = 16 * SECTOR
+    assert data[pvd] == 1 and data[pvd + 1:pvd + 6] == b'CD001', 'no PVD'
+    vol_id = data[pvd + 40:pvd + 72].decode('ascii', errors='replace').strip()
+    # Root directory record is the 34-byte blob at PVD+156.
+    root_extent = struct.unpack_from('<I', data, pvd + 156 + 2)[0]
+    root_size = struct.unpack_from('<I', data, pvd + 156 + 10)[0]
+    print(f'volume id: {vol_id!r}')
+
+    listing = []
+    walk(data, root_extent, root_size, '', out, listing, not list_only)
+    total = sum(sz for _, sz in listing)
+    for path, sz in sorted(listing):
+        print(f'{sz:>12,}  {path}')
+    print(f'== {len(listing)} files, {total:,} bytes'
+          + ('' if list_only else f' -> {out}'))
+
+
+if __name__ == '__main__':
+    main()

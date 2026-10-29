@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# flatdis — disassemble a flat binary image at its load address (Intel syntax).
+#
+#   flatdis FILE BASE                    whole image
+#   flatdis FILE BASE START              START .. START+0x100
+#   flatdis FILE BASE START STOP         explicit range (flat addresses)
+#   flatdis FILE BASE START +LEN         START .. START+LEN
+#   FLATDIS_MODE=i8086 flatdis ...       16-bit code (real-mode stubs, overlays)
+#
+# BASE is the address the image is loaded at (an LE object's link base, e.g.
+# 0x10000), so printed addresses match Ghidra and the LE header. Wraps:
+#   objdump -D -b binary -m i386 -M intel --adjust-vma=BASE FILE
+# Absolute operands inside LE objects are object-relative until fixed up —
+# see asmview. objdump resyncs linearly: data in code (jump tables, banners)
+# desynchronises the listing until the next aligned instruction, so a
+# function start can be misaligned; re-run with START at the true entry.
+set -euo pipefail
+[ $# -ge 2 ] || { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+file=$1 base=$2
+mode=${FLATDIS_MODE:-i386}
+args=(-D -b binary -m "$mode" -M intel "--adjust-vma=$base")
+if [ $# -ge 3 ]; then
+    start=$3
+    if [ $# -ge 4 ]; then
+        case $4 in +*) stop=$(printf '0x%x' $(( start + ${4#+} )));; *) stop=$4;; esac
+    else
+        stop=$(printf '0x%x' $(( start + 0x100 )))
+    fi
+    args+=("--start-address=$start" "--stop-address=$stop")
+fi
+# drop objdump's header lines (they embed the input path, which makes two
+# listings of the same bytes diff noisily)
+objdump "${args[@]}" "$file" | sed -e '1,/^Disassembly of section/d' | sed -e '1{/^$/d}'
