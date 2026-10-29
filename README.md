@@ -27,6 +27,19 @@ dosdbg -C cdrive GAME.EXE                     # DOSBox-X debugger, headless, in 
 dbgdrive send 'BPINT 21 3D'; dbgdrive run; dbgdrive regs
 ```
 
+### Prebuilt image
+
+Every version tag publishes the image to GHCR
+(`.github/workflows/release-image.yml`):
+
+```bash
+docker pull ghcr.io/waagbo/claude-toolbox-dos-reverse-engineering:latest   # or :1.0.0
+REBOX_IMAGE=ghcr.io/waagbo/claude-toolbox-dos-reverse-engineering:latest ./rebox shell
+```
+
+The published image bakes in uid/gid 1000; if your host uid differs, run
+`./rebox build` instead so files under `/work` stay yours.
+
 `rebox` works with Docker or Podman (Podman gets `--userns=keep-id`, so
 files written under `/work` stay yours). `./rebox run DIR -- CMD…` runs a
 single command; `./rebox gui` starts the Ghidra GUI on your X11 display.
@@ -71,6 +84,21 @@ a builder stage — the first build takes a while). To move Ghidra: change `GHID
 future Ghidra changes the loader API, the import will fail loudly and a
 loader rebuild (`gradle -PGHIDRA_INSTALL_DIR=/opt/ghidra` in the loader's
 source tree) is needed.
+
+## Releasing
+
+```bash
+gh release create v1.2.3 --generate-notes   # tag -> workflow -> ghcr.io/…:1.2.3, :1.2, :1, :latest
+```
+
+## Using the skill
+
+`.claude/skills/dos-re-toolbox/` is a Claude Code skill. It is active in
+sessions started inside this repo; to use it from any project, link it:
+
+```bash
+ln -sfn "$PWD/.claude/skills/dos-re-toolbox" ~/.claude/skills/dos-re-toolbox
+```
 
 ## Not included
 

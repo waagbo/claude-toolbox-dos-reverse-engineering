@@ -10,7 +10,11 @@ description: >-
 
 # dos-re-toolbox
 
-Everything runs in the `dos-re-toolbox` image (repo: `~/code/dos-re-toolbox`).
+Everything runs in the `dos-re-toolbox` image (repo
+`waagbo/claude-toolbox-dos-reverse-engineering`, cloned here at
+`~/code/dos-re-toolbox`; prebuilt as
+`ghcr.io/waagbo/claude-toolbox-dos-reverse-engineering:latest`, usable
+via `REBOX_IMAGE=<that> rebox shell` when the host uid is 1000).
 Every toolbox script prints its usage when run with no arguments — that
 usage text is the authoritative flag reference; this skill is the workflow
 and the gotchas.
